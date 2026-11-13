@@ -57,4 +57,9 @@ fs.writeFileSync(
   JSON.stringify(pagesWrangler, null, 2)
 );
 
+const deployConfig = path.join(root, '.wrangler', 'deploy', 'config.json');
+if (fs.existsSync(deployConfig)) {
+  fs.rmSync(deployConfig, { force: true });
+}
+
 console.log('Cloudflare Pages bundle preparado em dist/pages-deploy/');
