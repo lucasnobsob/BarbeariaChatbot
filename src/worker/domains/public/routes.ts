@@ -295,12 +295,26 @@ publicRoutes.get('/:slug/appointments/lookup', async (c) => {
   if (!tenant) return c.json({ error: 'Barbearia não encontrada' }, 404);
 
   const code = (c.req.query('code') || '').trim().toUpperCase();
+  const name = (c.req.query('name') || '').trim().toLowerCase();
   const phone = (c.req.query('phone') || '').replace(/\D/g, '');
-  if (!code || !phone) {
-    return c.json({ error: 'Informe o código de confirmação e o telefone' }, 400);
+
+  const conditions = ['a.TenantId = ?'];
+  const bindings: unknown[] = [tenant.Id];
+
+  if (code) {
+    conditions.push('a.ConfirmationCode = ?');
+    bindings.push(code);
+  }
+  if (name) {
+    conditions.push('LOWER(c.Name) LIKE ?');
+    bindings.push(`%${name}%`);
+  }
+  if (phone) {
+    conditions.push('c.Phone LIKE ?');
+    bindings.push(`%${phone}%`);
   }
 
-  const appt = await c.env.DB.prepare(
+  const res = await c.env.DB.prepare(
     `SELECT a.Id, a.StartAt, a.EndAt, a.Status, a.PriceInCents, a.ConfirmationCode,
             a.ServiceId, a.ProfessionalId,
             s.Name AS ServiceName, p.Name AS ProfessionalName, c.Name AS CustomerName
@@ -308,16 +322,22 @@ publicRoutes.get('/:slug/appointments/lookup', async (c) => {
      INNER JOIN Customers c ON c.TenantId = a.TenantId AND c.Id = a.CustomerId
      INNER JOIN Services s ON s.TenantId = a.TenantId AND s.Id = a.ServiceId
      INNER JOIN Professionals p ON p.TenantId = a.TenantId AND p.Id = a.ProfessionalId
-     WHERE a.TenantId = ? AND a.ConfirmationCode = ? AND c.Phone = ?`
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY a.StartAt DESC
+     LIMIT 20`
   )
-    .bind(tenant.Id, code, phone)
-    .first();
+    .bind(...bindings)
+    .all();
 
-  if (!appt) {
-    return c.json({ error: 'Agendamento não encontrado com este código e telefone' }, 404);
+  const appointments = res.results || [];
+  if (code && appointments.length === 0) {
+    return c.json({ error: 'Agendamento não encontrado com este código' }, 404);
   }
 
-  return c.json({ appointment: appt });
+  return c.json({
+    appointments,
+    appointment: appointments[0] ?? null
+  });
 });
 
 publicRoutes.post('/:slug/appointments/cancel', async (c) => {
@@ -330,21 +350,34 @@ publicRoutes.post('/:slug/appointments/cancel', async (c) => {
     return c.json({ error: 'Cancelamento online desabilitado pelo estabelecimento' }, 403);
   }
 
-  const body = (await c.req.json().catch(() => null)) as { code?: string; phone?: string } | null;
+  const body = (await c.req.json().catch(() => null)) as {
+    appointmentId?: string;
+    code?: string;
+    phone?: string;
+  } | null;
+  const appointmentId = (body?.appointmentId || '').trim();
   const code = (body?.code || '').trim().toUpperCase();
   const phone = (body?.phone || '').replace(/\D/g, '');
-  if (!code || !phone) {
-    return c.json({ error: 'Informe código e telefone' }, 400);
+  if (!code || (!phone && !appointmentId)) {
+    return c.json({ error: 'Informe os dados do agendamento para cancelar' }, 400);
   }
 
-  const appt = await c.env.DB.prepare(
-    `SELECT a.Id, a.Status
-     FROM Appointments a
-     INNER JOIN Customers c ON c.TenantId = a.TenantId AND c.Id = a.CustomerId
-     WHERE a.TenantId = ? AND a.ConfirmationCode = ? AND c.Phone = ?`
-  )
-    .bind(tenant.Id, code, phone)
-    .first<{ Id: string; Status: string }>();
+  const appt = appointmentId
+    ? await c.env.DB.prepare(
+        `SELECT a.Id, a.Status
+         FROM Appointments a
+         WHERE a.TenantId = ? AND a.Id = ? AND a.ConfirmationCode = ?`
+      )
+        .bind(tenant.Id, appointmentId, code)
+        .first<{ Id: string; Status: string }>()
+    : await c.env.DB.prepare(
+        `SELECT a.Id, a.Status
+         FROM Appointments a
+         INNER JOIN Customers c ON c.TenantId = a.TenantId AND c.Id = a.CustomerId
+         WHERE a.TenantId = ? AND a.ConfirmationCode = ? AND c.Phone = ?`
+      )
+        .bind(tenant.Id, code, phone)
+        .first<{ Id: string; Status: string }>();
 
   if (!appt) {
     return c.json({ error: 'Agendamento não encontrado' }, 404);
@@ -369,26 +402,36 @@ publicRoutes.post('/:slug/appointments/reschedule', async (c) => {
   if (!tenant) return c.json({ error: 'Barbearia não encontrada' }, 404);
 
   const body = (await c.req.json().catch(() => null)) as {
+    appointmentId?: string;
     code?: string;
     phone?: string;
     newStartAt?: string;
     newProfessionalId?: string;
   } | null;
 
+  const appointmentId = (body?.appointmentId || '').trim();
   const code = (body?.code || '').trim().toUpperCase();
   const phone = (body?.phone || '').replace(/\D/g, '');
-  if (!code || !phone || !body?.newStartAt) {
-    return c.json({ error: 'Informe código, telefone e novo horário' }, 400);
+  if (!code || (!phone && !appointmentId) || !body?.newStartAt) {
+    return c.json({ error: 'Informe o agendamento e o novo horário' }, 400);
   }
 
-  const appt = await c.env.DB.prepare(
-    `SELECT a.Id
-     FROM Appointments a
-     INNER JOIN Customers c ON c.TenantId = a.TenantId AND c.Id = a.CustomerId
-     WHERE a.TenantId = ? AND a.ConfirmationCode = ? AND c.Phone = ?`
-  )
-    .bind(tenant.Id, code, phone)
-    .first<{ Id: string }>();
+  const appt = appointmentId
+    ? await c.env.DB.prepare(
+        `SELECT a.Id
+         FROM Appointments a
+         WHERE a.TenantId = ? AND a.Id = ? AND a.ConfirmationCode = ?`
+      )
+        .bind(tenant.Id, appointmentId, code)
+        .first<{ Id: string }>()
+    : await c.env.DB.prepare(
+        `SELECT a.Id
+         FROM Appointments a
+         INNER JOIN Customers c ON c.TenantId = a.TenantId AND c.Id = a.CustomerId
+         WHERE a.TenantId = ? AND a.ConfirmationCode = ? AND c.Phone = ?`
+      )
+        .bind(tenant.Id, code, phone)
+        .first<{ Id: string }>();
 
   if (!appt) {
     return c.json({ error: 'Agendamento não encontrado' }, 404);

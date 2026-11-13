@@ -78,19 +78,23 @@ export function BarbershopPublicPage() {
   } | null>(null);
 
   // Manage existing appointment (lookup / cancel / reschedule)
-  const [lookupCode, setLookupCode] = useState('');
+  const [lookupName, setLookupName] = useState('');
   const [lookupPhone, setLookupPhone] = useState('');
-  const [lookupResult, setLookupResult] = useState<{
-    Id: string;
-    StartAt: string;
-    Status: string;
-    ConfirmationCode: string;
-    ServiceName: string;
-    ProfessionalName: string;
-    ServiceId: string;
-    ProfessionalId: string;
-  } | null>(null);
+  const [lookupResults, setLookupResults] = useState<
+    Array<{
+      Id: string;
+      StartAt: string;
+      Status: string;
+      ConfirmationCode: string;
+      ServiceName: string;
+      ProfessionalName: string;
+      CustomerName?: string;
+      ServiceId: string;
+      ProfessionalId: string;
+    }>
+  >([]);
   const [lookupMessage, setLookupMessage] = useState('');
+  const [activeRescheduleId, setActiveRescheduleId] = useState<string | null>(null);
   const [rescheduleDate, setRescheduleDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [rescheduleSlots, setRescheduleSlots] = useState<Array<{ time: string; startAt: string }>>([]);
   const [rescheduleStartAt, setRescheduleStartAt] = useState('');
@@ -207,55 +211,86 @@ export function BarbershopPublicPage() {
     e.preventDefault();
     if (!slug) return;
     setLookupMessage('');
-    setLookupResult(null);
+    setLookupResults([]);
+    setActiveRescheduleId(null);
+    setRescheduleStartAt('');
     try {
-      const res = await apiFetch<{ appointment: typeof lookupResult }>(
-        `/api/public/${encodeURIComponent(slug)}/appointments/lookup?code=${encodeURIComponent(lookupCode)}&phone=${encodeURIComponent(lookupPhone)}`
-      );
-      setLookupResult(res.appointment);
+      const params = new URLSearchParams();
+      if (lookupName.trim()) params.set('name', lookupName.trim());
+      if (lookupPhone.trim()) params.set('phone', lookupPhone.trim());
+      const qs = params.toString();
+      const res = await apiFetch<{
+        appointments?: typeof lookupResults;
+        appointment?: (typeof lookupResults)[number] | null;
+      }>(`/api/public/${encodeURIComponent(slug)}/appointments/lookup${qs ? `?${qs}` : ''}`);
+      const list = res.appointments ?? (res.appointment ? [res.appointment] : []);
+      setLookupResults(list);
+      if (list.length === 0) {
+        setLookupMessage('Nenhum agendamento encontrado.');
+      } else {
+        const firstConfirmed = list.find((a) => a.Status === 'confirmed');
+        if (firstConfirmed) {
+          setActiveRescheduleId(firstConfirmed.Id);
+        }
+      }
     } catch (err) {
       setLookupMessage(err instanceof Error ? err.message : 'Agendamento não encontrado');
     }
   };
 
-  const handleCancelLookup = async () => {
-    if (!slug || !lookupResult) return;
+  const handleCancelLookup = async (appt: (typeof lookupResults)[number]) => {
+    if (!slug) return;
     try {
       await apiFetch(`/api/public/${encodeURIComponent(slug)}/appointments/cancel`, {
         method: 'POST',
-        body: JSON.stringify({ code: lookupCode, phone: lookupPhone })
+        body: JSON.stringify({
+          appointmentId: appt.Id,
+          code: appt.ConfirmationCode,
+          phone: lookupPhone || undefined
+        })
       });
-      setLookupResult({ ...lookupResult, Status: 'cancelled' });
+      setLookupResults((prev) =>
+        prev.map((item) => (item.Id === appt.Id ? { ...item, Status: 'cancelled' } : item))
+      );
       setLookupMessage('Agendamento cancelado com sucesso.');
     } catch (err) {
       setLookupMessage(err instanceof Error ? err.message : 'Erro ao cancelar');
     }
   };
 
+  const activeRescheduleAppt =
+    lookupResults.find((a) => a.Id === activeRescheduleId) ?? null;
+
   useEffect(() => {
-    if (!slug || !lookupResult || !rescheduleDate) return;
+    if (!slug || !activeRescheduleAppt || !rescheduleDate) {
+      setRescheduleSlots([]);
+      return;
+    }
     apiFetch<{ slots: Array<{ time: string; startAt: string }> }>(
-      `/api/public/${encodeURIComponent(slug)}/slots?date=${encodeURIComponent(rescheduleDate)}&serviceId=${encodeURIComponent(lookupResult.ServiceId)}&professionalId=${encodeURIComponent(lookupResult.ProfessionalId)}`
+      `/api/public/${encodeURIComponent(slug)}/slots?date=${encodeURIComponent(rescheduleDate)}&serviceId=${encodeURIComponent(activeRescheduleAppt.ServiceId)}&professionalId=${encodeURIComponent(activeRescheduleAppt.ProfessionalId)}`
     )
       .then((res) => setRescheduleSlots(res.slots))
       .catch(() => setRescheduleSlots([]));
-  }, [slug, lookupResult, rescheduleDate]);
+  }, [slug, activeRescheduleAppt, rescheduleDate]);
 
-  const handleRescheduleLookup = async () => {
-    if (!slug || !lookupResult || !rescheduleStartAt) return;
+  const handleRescheduleLookup = async (appt: (typeof lookupResults)[number]) => {
+    if (!slug || !rescheduleStartAt) return;
     try {
       const res = await apiFetch<{ startAt: string }>(
         `/api/public/${encodeURIComponent(slug)}/appointments/reschedule`,
         {
           method: 'POST',
           body: JSON.stringify({
-            code: lookupCode,
-            phone: lookupPhone,
+            appointmentId: appt.Id,
+            code: appt.ConfirmationCode,
+            phone: lookupPhone || undefined,
             newStartAt: rescheduleStartAt
           })
         }
       );
-      setLookupResult({ ...lookupResult, StartAt: res.startAt });
+      setLookupResults((prev) =>
+        prev.map((item) => (item.Id === appt.Id ? { ...item, StartAt: res.startAt } : item))
+      );
       setLookupMessage('Horário reagendado com sucesso!');
       setRescheduleStartAt('');
     } catch (err) {
@@ -917,17 +952,15 @@ export function BarbershopPublicPage() {
             <div className="space-y-4">
               <form onSubmit={handleLookup} className="grid gap-3 sm:grid-cols-3">
                 <input
-                  required
-                  value={lookupCode}
-                  onChange={(e) => setLookupCode(e.target.value.toUpperCase())}
-                  placeholder="Código (ex: BRB-A1B2C3)"
-                  className="rounded-xl border border-white/15 bg-slate-900 px-3.5 py-2.5 text-sm font-mono text-white"
+                  value={lookupName}
+                  onChange={(e) => setLookupName(e.target.value)}
+                  placeholder="Nome (opcional)"
+                  className="rounded-xl border border-white/15 bg-slate-900 px-3.5 py-2.5 text-sm text-white"
                 />
                 <input
-                  required
                   value={lookupPhone}
                   onChange={(e) => setLookupPhone(e.target.value)}
-                  placeholder="Telefone cadastrado"
+                  placeholder="Telefone (opcional)"
                   className="rounded-xl border border-white/15 bg-slate-900 px-3.5 py-2.5 text-sm text-white"
                 />
                 <button
@@ -943,62 +976,101 @@ export function BarbershopPublicPage() {
                 <p className="text-sm text-amber-300">{lookupMessage}</p>
               )}
 
-              {lookupResult && (
-                <div className="rounded-2xl border border-white/15 bg-slate-900/70 p-5 text-sm">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="font-bold text-white">
-                        {lookupResult.ServiceName} — {lookupResult.ProfessionalName}
-                      </p>
-                      <p className="text-slate-300">{formatDateTimeBR(lookupResult.StartAt)}</p>
-                    </div>
-                    <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase">
-                      {lookupResult.Status}
-                    </span>
-                  </div>
+              {lookupResults.length > 0 && (
+                <div className="space-y-3">
+                  {lookupResults.map((appt) => {
+                    const isRescheduleOpen = activeRescheduleId === appt.Id;
+                    return (
+                      <div key={appt.Id} className="rounded-2xl border border-white/15 bg-slate-900/70 p-5 text-sm">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="font-bold text-white">
+                              {appt.ServiceName} — {appt.ProfessionalName}
+                            </p>
+                            {appt.CustomerName && (
+                              <p className="text-xs text-slate-400">
+                                Cliente: {appt.CustomerName} · Código: {appt.ConfirmationCode}
+                              </p>
+                            )}
+                            <p className="text-slate-300">{formatDateTimeBR(appt.StartAt)}</p>
+                          </div>
+                          <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase">
+                            {appt.Status}
+                          </span>
+                        </div>
 
-                  {lookupResult.Status === 'confirmed' && (
-                    <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <input
-                          type="date"
-                          value={rescheduleDate}
-                          min={new Date().toISOString().slice(0, 10)}
-                          onChange={(e) => setRescheduleDate(e.target.value)}
-                          className="rounded-lg border border-white/15 bg-slate-950 px-3 py-1.5 text-xs"
-                        />
-                        <select
-                          value={rescheduleStartAt}
-                          onChange={(e) => setRescheduleStartAt(e.target.value)}
-                          className="rounded-lg border border-white/15 bg-slate-950 px-3 py-1.5 text-xs"
-                        >
-                          <option value="">Novo horário...</option>
-                          {rescheduleSlots.map((s) => (
-                            <option key={s.startAt} value={s.startAt}>
-                              {s.time}
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          disabled={!rescheduleStartAt}
-                          onClick={() => void handleRescheduleLookup()}
-                          className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 disabled:opacity-40"
-                        >
-                          Reagendar
-                        </button>
-                        {data.settings.allowPublicCancellation && (
-                          <button
-                            type="button"
-                            onClick={() => void handleCancelLookup()}
-                            className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
-                          >
-                            Cancelar Horário
-                          </button>
+                        {appt.Status === 'confirmed' && (
+                          <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
+                            {isRescheduleOpen ? (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <input
+                                  type="date"
+                                  value={rescheduleDate}
+                                  min={new Date().toISOString().slice(0, 10)}
+                                  onChange={(e) => {
+                                    setRescheduleDate(e.target.value);
+                                    setRescheduleStartAt('');
+                                  }}
+                                  className="rounded-lg border border-white/15 bg-slate-950 px-3 py-1.5 text-xs"
+                                />
+                                <select
+                                  value={rescheduleStartAt}
+                                  onChange={(e) => setRescheduleStartAt(e.target.value)}
+                                  className="rounded-lg border border-white/15 bg-slate-950 px-3 py-1.5 text-xs"
+                                >
+                                  <option value="">Novo horário...</option>
+                                  {rescheduleSlots.map((s) => (
+                                    <option key={s.startAt} value={s.startAt}>
+                                      {s.time}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  disabled={!rescheduleStartAt}
+                                  onClick={() => void handleRescheduleLookup(appt)}
+                                  className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950 disabled:opacity-40"
+                                >
+                                  Confirmar Reagendamento
+                                </button>
+                                {data.settings.allowPublicCancellation && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCancelLookup(appt)}
+                                    className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
+                                  >
+                                    Cancelar Horário
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setActiveRescheduleId(appt.Id);
+                                    setRescheduleStartAt('');
+                                  }}
+                                  className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-slate-950"
+                                >
+                                  Reagendar
+                                </button>
+                                {data.settings.allowPublicCancellation && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleCancelLookup(appt)}
+                                    className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-semibold text-red-300 hover:bg-red-950/40"
+                                  >
+                                    Cancelar Horário
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         )}
                       </div>
-                    </div>
-                  )}
+                    );
+                  })}
                 </div>
               )}
             </div>

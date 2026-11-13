@@ -779,5 +779,35 @@ describe('Plataforma SaaS Multi-Tenant — Testes Automatizados', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+
+    // ── 9. Consulta em Meus Agendamentos com Nome e Telefone opcionais ────
+    const lookupAll = await SELF.fetch(
+      `http://example.com/api/public/${alpha.slug}/appointments/lookup`
+    );
+    expect(lookupAll.status).toBe(200);
+    const lookupAllJson = (await lookupAll.json()) as {
+      appointments: Array<{ Id: string; CustomerName: string; ConfirmationCode: string }>;
+    };
+    expect(lookupAllJson.appointments.length).toBeGreaterThanOrEqual(1);
+
+    const lookupByName = await SELF.fetch(
+      `http://example.com/api/public/${alpha.slug}/appointments/lookup?name=cliente`
+    );
+    expect(lookupByName.status).toBe(200);
+    const lookupByNameJson = (await lookupByName.json()) as {
+      appointments: Array<{ CustomerName: string }>;
+    };
+    expect(lookupByNameJson.appointments.some((a) => a.CustomerName.includes('Cliente Alpha'))).toBe(
+      true
+    );
+
+    const lookupByPhone = await SELF.fetch(
+      `http://example.com/api/public/${alpha.slug}/appointments/lookup?phone=911112222`
+    );
+    expect(lookupByPhone.status).toBe(200);
+    const lookupByPhoneJson = (await lookupByPhone.json()) as {
+      appointments: Array<{ CustomerName: string }>;
+    };
+    expect(lookupByPhoneJson.appointments.length).toBeGreaterThanOrEqual(1);
   });
 });
