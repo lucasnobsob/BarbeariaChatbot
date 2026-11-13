@@ -1,8 +1,9 @@
 import { env, SELF } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { hashPassword, sha256Hex } from '@worker/lib/crypto';
 import { ChatbotService } from '@worker/domains/chatbot/ChatbotService';
 import { TenantResolver } from '@worker/domains/chatbot/TenantResolver';
+import { TelegramProvider } from '@worker/domains/chatbot/TelegramProvider';
 
 function extractCookie(res: Response): string {
   const raw = res.headers.get('set-cookie') || '';
@@ -659,5 +660,124 @@ describe('Plataforma SaaS Multi-Tenant — Testes Automatizados', () => {
 
     const betaBlockedPublic = await SELF.fetch(`http://example.com/api/public/${beta.slug}`);
     expect(betaBlockedPublic.status).toBe(404);
+
+    // ── 8. Auditoria e Fluxo Real de Webhook Telegram (HTTP + sendMessage) ──
+    expect(TelegramProvider.normalizeToken('bot123456:ABC_DEF-0123456789abcdefghij')).toBe(
+      '123456:ABC_DEF-0123456789abcdefghij'
+    );
+
+    const tgGetProbe = await SELF.fetch(
+      `http://example.com/api/webhooks/telegram/${alpha.tenantId}`
+    );
+    expect(tgGetProbe.status).toBe(405);
+    const tgGetProbeJson = (await tgGetProbe.json()) as { expectedMethod: string };
+    expect(tgGetProbeJson.expectedMethod).toBe('POST');
+
+    const tgUnauthorized = await SELF.fetch(
+      `http://example.com/api/webhooks/telegram/${alpha.tenantId}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ update_id: 1 })
+      }
+    );
+    expect(tgUnauthorized.status).toBe(403);
+
+    const tgForbiddenWrongSecret = await SELF.fetch(
+      `http://example.com/api/webhooks/telegram/${alpha.tenantId}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Telegram-Bot-Api-Secret-Token': 'wrong-secret'
+        },
+        body: JSON.stringify({ update_id: 2 })
+      }
+    );
+    expect(tgForbiddenWrongSecret.status).toBe(403);
+
+    const originalFetch = globalThis.fetch;
+    const telegramCalls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.startsWith('https://api.telegram.org/bot')) {
+        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+        telegramCalls.push({ url, body: parsedBody });
+        if (url.endsWith('/getMe')) {
+          return new Response(
+            JSON.stringify({ ok: true, result: { id: 999, username: 'AlphaBarberTestBot' } }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/getWebhookInfo')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              result: {
+                url: `http://example.com/api/webhooks/telegram/${alpha.tenantId}`,
+                pending_update_count: 0
+              }
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/sendMessage')) {
+          if (parsedBody?.parse_mode === 'Markdown') {
+            return new Response(
+              JSON.stringify({ ok: false, error_code: 400, description: "Bad Request: can't parse entities" }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          return new Response(JSON.stringify({ ok: true, result: { message_id: 77 } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+      }
+      return originalFetch(input as RequestInfo, init);
+    });
+
+    try {
+      const statusRes = await SELF.fetch('http://example.com/api/admin/chatbot/telegram/status', {
+        headers: { Cookie: alpha.cookie }
+      });
+      expect(statusRes.status).toBe(200);
+      const statusJson = (await statusRes.json()) as {
+        configured: boolean;
+        bot?: { username?: string };
+        webhook?: { url?: string };
+      };
+      expect(statusJson.configured).toBe(true);
+      expect(statusJson.bot?.username).toBe('AlphaBarberTestBot');
+      expect(statusJson.webhook?.url).toContain(alpha.tenantId);
+
+      const tgWebhookOk = await SELF.fetch(
+        `http://example.com/api/webhooks/telegram/${alpha.tenantId}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Telegram-Bot-Api-Secret-Token': 'alpha-webhook-secret'
+          },
+          body: JSON.stringify({
+            update_id: 1001,
+            message: {
+              message_id: 55,
+              chat: { id: 888999, type: 'private' },
+              from: { id: 888999, first_name: 'Carlos_Teste' },
+              text: 'menu'
+            }
+          })
+        }
+      );
+      expect(tgWebhookOk.status).toBe(200);
+      const sendCalls = telegramCalls.filter((c) => c.url.endsWith('/sendMessage'));
+      expect(sendCalls.length).toBe(2);
+      expect(sendCalls[0].body?.parse_mode).toBe('Markdown');
+      expect(sendCalls[1].body?.parse_mode).toBeUndefined();
+      expect(String(sendCalls[1].body?.text)).toContain('1 - Ver serviços');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

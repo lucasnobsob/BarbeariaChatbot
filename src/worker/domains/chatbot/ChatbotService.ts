@@ -1,4 +1,5 @@
 import { generateId } from '@worker/lib/crypto';
+import { logSystemEvent } from '@worker/lib/logger';
 import type { ResolvedChatbotTenant } from './TenantResolver';
 import { MessageHandler, type ChatSessionContext } from './MessageHandler';
 import { TelegramProvider } from './TelegramProvider';
@@ -115,12 +116,39 @@ export class ChatbotService {
     ]);
 
     if (dispatchReply) {
-      if (source === 'telegram' && tenant.secrets.botToken) {
-        await TelegramProvider.sendMessage(
-          tenant.secrets.botToken,
-          externalUserId,
-          result.reply
-        ).catch(() => false);
+      if (source === 'telegram') {
+        if (!tenant.secrets.botToken) {
+          await logSystemEvent(db, {
+            tenantId: tenant.tenantId,
+            level: 'warn',
+            source: 'chatbot/telegram/sendMessage',
+            message: 'Bot token ausente ao tentar enviar resposta pelo Telegram'
+          });
+        } else {
+          try {
+            const sendRes = await TelegramProvider.sendMessage(
+              tenant.secrets.botToken,
+              externalUserId,
+              result.reply
+            );
+            if (!sendRes.ok) {
+              await logSystemEvent(db, {
+                tenantId: tenant.tenantId,
+                level: 'error',
+                source: 'chatbot/telegram/sendMessage',
+                message: sendRes.description || 'Falha ao enviar resposta pelo Telegram',
+                meta: { errorCode: sendRes.errorCode ?? null }
+              });
+            }
+          } catch (err) {
+            await logSystemEvent(db, {
+              tenantId: tenant.tenantId,
+              level: 'error',
+              source: 'chatbot/telegram/sendMessage',
+              message: err instanceof Error ? err.message : 'Erro de rede ao chamar sendMessage'
+            });
+          }
+        }
       } else if (
         source === 'whatsapp' &&
         tenant.secrets.phoneNumberId &&

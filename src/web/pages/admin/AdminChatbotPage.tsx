@@ -1,7 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Bot, CheckCircle2, Info, MessageSquare, Save, Send, Webhook } from 'lucide-react';
+import { Activity, AlertTriangle, Bot, CheckCircle2, Info, MessageSquare, Save, Send, Webhook } from 'lucide-react';
 import type { ChatbotConfigPublic } from '@shared/types';
 import { apiFetch } from '@web/lib/api';
+
+interface TelegramStatusPayload {
+  configured: boolean;
+  isEnabled: boolean;
+  webhookSecretSaved: boolean;
+  expectedWebhookUrl: string;
+  bot?: { id?: number; username?: string; first_name?: string } | null;
+  botError?: string | null;
+  webhook?: {
+    url?: string;
+    pending_update_count?: number;
+    last_error_date?: number;
+    last_error_message?: string;
+  } | null;
+  webhookError?: string | null;
+}
 
 export function AdminChatbotPage() {
   const [configs, setConfigs] = useState<ChatbotConfigPublic[]>([]);
@@ -25,6 +41,8 @@ export function AdminChatbotPage() {
 
   const [statusMsg, setStatusMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const [tgStatus, setTgStatus] = useState<TelegramStatusPayload | null>(null);
+  const [checkingStatus, setCheckingStatus] = useState(false);
 
   // Simulator
   const [simMessages, setSimMessages] = useState<Array<{ from: 'user' | 'bot'; text: string }>>([
@@ -85,12 +103,32 @@ export function AdminChatbotPage() {
     setStatusMsg('');
     setErrorMsg('');
     try {
-      const res = await apiFetch<{ webhookUrl: string }>('/api/admin/chatbot/telegram/register-webhook', {
-        method: 'POST'
-      });
-      setStatusMsg(`Webhook registrado no Telegram: ${res.webhookUrl}`);
+      const res = await apiFetch<{ webhookUrl: string; isEnabled?: boolean }>(
+        '/api/admin/chatbot/telegram/register-webhook',
+        { method: 'POST' }
+      );
+      await load();
+      await checkTelegramStatus();
+      setStatusMsg(
+        res.isEnabled === false
+          ? `Webhook registrado no Telegram (${res.webhookUrl}), mas o atendimento ainda está desativado. Marque a caixa "Ativar atendimento automático no Telegram" e clique em Salvar Configuração.`
+          : `Webhook registrado com segurança no Telegram: ${res.webhookUrl}`
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Erro ao registrar webhook');
+    }
+  };
+
+  const checkTelegramStatus = async () => {
+    setCheckingStatus(true);
+    setErrorMsg('');
+    try {
+      const res = await apiFetch<TelegramStatusPayload>('/api/admin/chatbot/telegram/status');
+      setTgStatus(res);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Erro ao consultar status no Telegram');
+    } finally {
+      setCheckingStatus(false);
     }
   };
 
@@ -280,7 +318,66 @@ export function AdminChatbotPage() {
                 >
                   <Webhook className="h-4 w-4" /> Registrar Webhook no Telegram
                 </button>
+                <button
+                  type="button"
+                  disabled={checkingStatus}
+                  onClick={() => void checkTelegramStatus()}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-700 bg-slate-950 px-4 py-2.5 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+                >
+                  <Activity className="h-4 w-4" />{' '}
+                  {checkingStatus ? 'Consultando...' : 'Verificar Status (getWebhookInfo)'}
+                </button>
               </div>
+
+              {tgStatus && (
+                <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 text-xs space-y-2">
+                  <div className="font-semibold text-slate-200">Diagnóstico ao vivo (Telegram Bot API)</div>
+                  {!tgStatus.configured ? (
+                    <p className="text-amber-300">Nenhum Bot Token salvo ainda.</p>
+                  ) : (
+                    <>
+                      <p>
+                        Bot (<code>getMe</code>):{' '}
+                        {tgStatus.bot?.username ? (
+                          <span className="text-emerald-400">@{tgStatus.bot.username}</span>
+                        ) : (
+                          <span className="text-red-400">{tgStatus.botError || 'Falha ao validar token'}</span>
+                        )}
+                      </p>
+                      <p>
+                        Webhook no Telegram:{' '}
+                        <span className="break-all font-mono text-slate-300">
+                          {tgStatus.webhook?.url || tgStatus.webhookError || '(nenhum webhook configurado)'}
+                        </span>
+                      </p>
+                      <p>
+                        Secret Token salvo no servidor:{' '}
+                        {tgStatus.webhookSecretSaved ? (
+                          <span className="text-emerald-400">Sim</span>
+                        ) : (
+                          <span className="text-amber-300">Não — clique em "Registrar Webhook no Telegram"</span>
+                        )}
+                      </p>
+                      {tgStatus.webhook?.url && tgStatus.webhook.url !== tgStatus.expectedWebhookUrl && (
+                        <p className="flex items-center gap-1.5 text-amber-300">
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                          A URL registrada no Telegram difere da URL atual ({tgStatus.expectedWebhookUrl}). Clique em "Registrar Webhook no Telegram" para atualizar.
+                        </p>
+                      )}
+                      {typeof tgStatus.webhook?.pending_update_count === 'number' && (
+                        <p className="text-slate-400">
+                          Atualizações pendentes na fila do Telegram: {tgStatus.webhook.pending_update_count}
+                        </p>
+                      )}
+                      {tgStatus.webhook?.last_error_message && (
+                        <p className="rounded-lg border border-red-500/30 bg-red-950/30 p-2 text-red-300">
+                          Último erro reportado pelo Telegram: {tgStatus.webhook.last_error_message}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </form>
           ) : (
             <form onSubmit={saveWhatsApp} className="rounded-2xl border border-slate-800 bg-slate-900 p-6 space-y-4">

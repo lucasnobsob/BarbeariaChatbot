@@ -14,6 +14,7 @@ import { TenantResolver } from './TenantResolver';
 import { ChatbotService } from './ChatbotService';
 import { TelegramProvider, type TelegramUpdate } from './TelegramProvider';
 import { WhatsAppProvider, type WhatsAppWebhookPayload } from './WhatsAppProvider';
+import { logSystemEvent } from '@worker/lib/logger';
 
 export const chatbotAdminRoutes = new Hono<AppEnv>();
 export const chatbotWebhookRoutes = new Hono<AppEnv>();
@@ -24,9 +25,15 @@ chatbotAdminRoutes.get('/', async (c) => {
   const tenantId = c.get('tenantId')!;
   const origin = new URL(c.req.url).origin;
 
-  const [tg, wa] = await Promise.all([
+  const [tg, wa, tgSecretRow] = await Promise.all([
     TenantResolver.resolveForAdmin(c.env, tenantId, 'telegram'),
-    TenantResolver.resolveForAdmin(c.env, tenantId, 'whatsapp')
+    TenantResolver.resolveForAdmin(c.env, tenantId, 'whatsapp'),
+    c.env.DB.prepare(
+      `SELECT CASE WHEN WebhookSecretHash != '' THEN 1 ELSE 0 END AS HasSecret
+       FROM ChatbotConfigurations WHERE TenantId = ? AND Provider = 'telegram'`
+    )
+      .bind(tenantId)
+      .first<{ HasSecret: number }>()
   ]);
 
   return c.json({
@@ -39,7 +46,8 @@ chatbotAdminRoutes.get('/', async (c) => {
         hasToken: Boolean(tg?.secrets.botToken),
         maskedToken: maskSecret(tg?.secrets.botToken),
         botUsername: tg?.secrets.botUsername || '',
-        webhookUrl: `${origin}/api/webhooks/telegram/${tenantId}`
+        webhookUrl: `${origin}/api/webhooks/telegram/${tenantId}`,
+        webhookRegistered: tgSecretRow?.HasSecret === 1
       },
       {
         provider: 'whatsapp',
@@ -70,7 +78,19 @@ chatbotAdminRoutes.put('/', async (c) => {
   let webhookSecretHash = '';
 
   if (data.provider === 'telegram') {
-    const botTokenPlain = data.botToken?.trim() || existing?.secrets.botToken || '';
+    const rawNewToken = data.botToken?.trim();
+    const normalizedNew = rawNewToken ? TelegramProvider.normalizeToken(rawNewToken) : '';
+    if (normalizedNew && !TelegramProvider.isValidTokenFormat(normalizedNew)) {
+      return c.json(
+        {
+          error:
+            'Formato de Bot Token inválido. Cole apenas o token gerado pelo @BotFather (ex: 123456789:AAF...), sem o prefixo "bot".'
+        },
+        400
+      );
+    }
+    const botTokenPlain =
+      normalizedNew || (existing?.secrets.botToken ? TelegramProvider.normalizeToken(existing.secrets.botToken) : '');
     const botUsername = data.botUsername?.trim() || existing?.secrets.botUsername || '';
     configJsonObj = {
       botToken: botTokenPlain ? await encryptSecret(botTokenPlain, encKey) : '',
@@ -130,18 +150,26 @@ chatbotAdminRoutes.post('/telegram/register-webhook', async (c) => {
     return c.json({ error: 'Configure o token do bot Telegram antes de registrar o webhook' }, 400);
   }
 
+  const normalizedToken = TelegramProvider.normalizeToken(resolved.secrets.botToken);
   const secretToken = generateToken(24);
   const secretHash = await sha256Hex(secretToken);
   const origin = new URL(c.req.url).origin;
   const webhookUrl = `${origin}/api/webhooks/telegram/${tenantId}`;
 
   const tgRes = await TelegramProvider.setWebhook(
-    resolved.secrets.botToken,
+    normalizedToken,
     webhookUrl,
     secretToken
   );
 
   if (!tgRes.ok) {
+    await logSystemEvent(c.env.DB, {
+      tenantId,
+      level: 'error',
+      source: 'chatbot/telegram/setWebhook',
+      message: tgRes.description || 'Falha ao registrar webhook na API do Telegram',
+      meta: { errorCode: tgRes.error_code ?? null }
+    });
     return c.json(
       { error: tgRes.description || 'Falha ao registrar webhook na API do Telegram' },
       502
@@ -155,7 +183,50 @@ chatbotAdminRoutes.post('/telegram/register-webhook', async (c) => {
     .bind(secretHash, tenantId)
     .run();
 
-  return c.json({ ok: true, webhookUrl });
+  return c.json({ ok: true, webhookUrl, isEnabled: resolved.isEnabled });
+});
+
+chatbotAdminRoutes.get('/telegram/status', async (c) => {
+  const tenantId = c.get('tenantId')!;
+  const origin = new URL(c.req.url).origin;
+  const expectedWebhookUrl = `${origin}/api/webhooks/telegram/${tenantId}`;
+
+  const [resolved, secretRow] = await Promise.all([
+    TenantResolver.resolveForAdmin(c.env, tenantId, 'telegram'),
+    c.env.DB.prepare(
+      `SELECT CASE WHEN WebhookSecretHash != '' THEN 1 ELSE 0 END AS HasSecret
+       FROM ChatbotConfigurations WHERE TenantId = ? AND Provider = 'telegram'`
+    )
+      .bind(tenantId)
+      .first<{ HasSecret: number }>()
+  ]);
+
+  const webhookSecretSaved = secretRow?.HasSecret === 1;
+  if (!resolved?.secrets.botToken) {
+    return c.json({
+      configured: false,
+      isEnabled: resolved?.isEnabled ?? false,
+      webhookSecretSaved,
+      expectedWebhookUrl
+    });
+  }
+
+  const normalizedToken = TelegramProvider.normalizeToken(resolved.secrets.botToken);
+  const [meRes, infoRes] = await Promise.all([
+    TelegramProvider.getMe(normalizedToken),
+    TelegramProvider.getWebhookInfo(normalizedToken)
+  ]);
+
+  return c.json({
+    configured: true,
+    isEnabled: resolved.isEnabled,
+    webhookSecretSaved,
+    expectedWebhookUrl,
+    bot: meRes.ok ? meRes.result ?? null : null,
+    botError: !meRes.ok ? meRes.description || 'Token inválido na API do Telegram' : null,
+    webhook: infoRes.ok ? infoRes.result ?? null : null,
+    webhookError: !infoRes.ok ? infoRes.description || 'Falha ao consultar getWebhookInfo' : null
+  });
 });
 
 chatbotAdminRoutes.post('/simulate', async (c) => {
@@ -189,6 +260,19 @@ chatbotAdminRoutes.post('/simulate', async (c) => {
 });
 
 // ─── Public Webhooks ─────────────────────────────────────────────────────────
+chatbotWebhookRoutes.get('/telegram/:tenantId', (c) => {
+  return c.json(
+    {
+      ok: false,
+      error: 'Method Not Allowed',
+      expectedMethod: 'POST',
+      description:
+        'Endpoint de webhook Telegram ativo. A Telegram Bot API envia atualizações exclusivamente via POST.'
+    },
+    405
+  );
+});
+
 chatbotWebhookRoutes.post('/telegram/:tenantId', async (c) => {
   const tenantId = c.req.param('tenantId');
   const secretHeader = c.req.header('X-Telegram-Bot-Api-Secret-Token');
@@ -199,6 +283,34 @@ chatbotWebhookRoutes.post('/telegram/:tenantId', async (c) => {
     secretHeader
   );
   if (!resolved) {
+    const diagRow = await c.env.DB.prepare(
+      `SELECT t.Status AS TenantStatus, c.IsEnabled,
+              CASE WHEN c.WebhookSecretHash != '' THEN 1 ELSE 0 END AS HasSecret
+       FROM Tenants t
+       LEFT JOIN ChatbotConfigurations c ON c.TenantId = t.Id AND c.Provider = 'telegram'
+       WHERE t.Id = ?`
+    )
+      .bind(tenantId)
+      .first<{ TenantStatus: string; IsEnabled: number | null; HasSecret: number | null }>();
+
+    const reason = !diagRow
+      ? 'tenant_not_found'
+      : diagRow.TenantStatus !== 'active'
+        ? `tenant_status_${diagRow.TenantStatus}`
+        : diagRow.IsEnabled !== 1
+          ? 'telegram_disabled'
+          : !diagRow.HasSecret
+            ? 'webhook_secret_not_registered'
+            : !secretHeader
+              ? 'missing_secret_token_header'
+              : 'secret_token_mismatch';
+
+    await logSystemEvent(c.env.DB, {
+      tenantId: diagRow ? tenantId : null,
+      level: 'warn',
+      source: 'chatbot/telegram/webhook',
+      message: `Webhook Telegram rejeitado (403): ${reason}`
+    });
     return c.json({ error: 'Webhook não autorizado' }, 403);
   }
 
@@ -208,13 +320,22 @@ chatbotWebhookRoutes.post('/telegram/:tenantId', async (c) => {
   const incoming = TelegramProvider.extractIncomingMessage(update);
   if (!incoming) return c.json({ ok: true });
 
-  await ChatbotService.handleIncomingText({
-    db: c.env.DB,
-    tenant: resolved,
-    externalUserId: incoming.externalUserId,
-    text: incoming.text,
-    source: 'telegram'
-  });
+  try {
+    await ChatbotService.handleIncomingText({
+      db: c.env.DB,
+      tenant: resolved,
+      externalUserId: incoming.externalUserId,
+      text: incoming.text,
+      source: 'telegram'
+    });
+  } catch (err) {
+    await logSystemEvent(c.env.DB, {
+      tenantId: resolved.tenantId,
+      level: 'error',
+      source: 'chatbot/telegram/webhook',
+      message: err instanceof Error ? err.message : 'Erro ao processar atualização do Telegram'
+    });
+  }
 
   return c.json({ ok: true });
 });

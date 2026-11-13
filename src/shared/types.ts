@@ -167,6 +167,7 @@ export interface ChatbotConfigPublic {
   botUsername?: string;
   phoneNumberId?: string;
   webhookUrl: string;
+  webhookRegistered?: boolean;
 }
 
 export interface PublicBarbershopPayload {
