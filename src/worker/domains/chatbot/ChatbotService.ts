@@ -149,17 +149,40 @@ export class ChatbotService {
             });
           }
         }
-      } else if (
-        source === 'whatsapp' &&
-        tenant.secrets.phoneNumberId &&
-        tenant.secrets.accessToken
-      ) {
-        await WhatsAppProvider.sendMessage(
-          tenant.secrets.phoneNumberId,
-          tenant.secrets.accessToken,
-          externalUserId,
-          result.reply
-        ).catch(() => false);
+      } else if (source === 'whatsapp') {
+        if (!tenant.secrets.phoneNumberId || !tenant.secrets.accessToken) {
+          await logSystemEvent(db, {
+            tenantId: tenant.tenantId,
+            level: 'warn',
+            source: 'chatbot/whatsapp/sendMessage',
+            message: 'Phone Number ID ou Access Token ausente ao tentar enviar resposta no WhatsApp'
+          });
+        } else {
+          try {
+            const waRes = await WhatsAppProvider.sendMessage(
+              tenant.secrets.phoneNumberId,
+              tenant.secrets.accessToken,
+              externalUserId,
+              result.reply
+            );
+            if (!waRes.ok) {
+              await logSystemEvent(db, {
+                tenantId: tenant.tenantId,
+                level: 'error',
+                source: 'chatbot/whatsapp/sendMessage',
+                message: waRes.description || 'Falha ao enviar resposta pelo WhatsApp',
+                meta: { errorCode: waRes.errorCode ?? null }
+              });
+            }
+          } catch (err) {
+            await logSystemEvent(db, {
+              tenantId: tenant.tenantId,
+              level: 'error',
+              source: 'chatbot/whatsapp/sendMessage',
+              message: err instanceof Error ? err.message : 'Erro de rede ao chamar WhatsApp Cloud API'
+            });
+          }
+        }
       }
     }
 

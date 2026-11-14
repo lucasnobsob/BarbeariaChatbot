@@ -42,8 +42,10 @@ export class WhatsAppProvider {
     accessToken: string,
     to: string,
     text: string
-  ): Promise<boolean> {
-    if (!phoneNumberId || !accessToken) return false;
+  ): Promise<{ ok: boolean; errorCode?: number; description?: string }> {
+    if (!phoneNumberId || !accessToken) {
+      return { ok: false, description: 'Phone Number ID ou Access Token ausente' };
+    }
     const res = await fetch(
       `https://graph.facebook.com/v21.0/${encodeURIComponent(phoneNumberId)}/messages`,
       {
@@ -60,6 +62,18 @@ export class WhatsAppProvider {
         })
       }
     );
-    return res.ok;
+    if (res.ok) {
+      return { ok: true };
+    }
+    const errBody = (await res.json().catch(() => null)) as {
+      error?: { code?: number; message?: string; error_data?: { details?: string } };
+    } | null;
+    const description =
+      errBody?.error?.error_data?.details || errBody?.error?.message || `HTTP ${res.status}`;
+    return {
+      ok: false,
+      errorCode: errBody?.error?.code ?? res.status,
+      description
+    };
   }
 }

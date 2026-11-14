@@ -361,7 +361,15 @@ chatbotWebhookRoutes.get('/whatsapp/:tenantId', async (c) => {
 chatbotWebhookRoutes.post('/whatsapp/:tenantId', async (c) => {
   const tenantId = c.req.param('tenantId');
   const resolved = await TenantResolver.resolveWhatsAppWebhook(c.env, tenantId);
-  if (!resolved) return c.json({ error: 'Webhook não autorizado' }, 403);
+  if (!resolved) {
+    await logSystemEvent(c.env.DB, {
+      tenantId,
+      level: 'warn',
+      source: 'chatbot/whatsapp/webhook',
+      message: 'Webhook WhatsApp rejeitado (403): tenant inativo ou WhatsApp desabilitado'
+    });
+    return c.json({ error: 'Webhook não autorizado' }, 403);
+  }
 
   const rawBody = await c.req.text();
   const signature = c.req.header('X-Hub-Signature-256');
@@ -371,6 +379,17 @@ chatbotWebhookRoutes.post('/whatsapp/:tenantId', async (c) => {
     resolved.secrets.appSecret
   );
   if (!validSig) {
+    const reason = !signature
+      ? 'missing_hub_signature_header'
+      : !resolved.secrets.appSecret
+        ? 'missing_app_secret'
+        : 'hmac_signature_mismatch';
+    await logSystemEvent(c.env.DB, {
+      tenantId: resolved.tenantId,
+      level: 'warn',
+      source: 'chatbot/whatsapp/webhook',
+      message: `Webhook WhatsApp rejeitado (403): ${reason}`
+    });
     return c.json({ error: 'Assinatura inválida' }, 403);
   }
 
@@ -378,13 +397,22 @@ chatbotWebhookRoutes.post('/whatsapp/:tenantId', async (c) => {
   const incoming = WhatsAppProvider.extractIncomingMessage(payload);
   if (!incoming) return c.json({ ok: true });
 
-  await ChatbotService.handleIncomingText({
-    db: c.env.DB,
-    tenant: resolved,
-    externalUserId: incoming.externalUserId,
-    text: incoming.text,
-    source: 'whatsapp'
-  });
+  try {
+    await ChatbotService.handleIncomingText({
+      db: c.env.DB,
+      tenant: resolved,
+      externalUserId: incoming.externalUserId,
+      text: incoming.text,
+      source: 'whatsapp'
+    });
+  } catch (err) {
+    await logSystemEvent(c.env.DB, {
+      tenantId: resolved.tenantId,
+      level: 'error',
+      source: 'chatbot/whatsapp/webhook',
+      message: err instanceof Error ? err.message : 'Erro ao processar mensagem do WhatsApp'
+    });
+  }
 
   return c.json({ ok: true });
 });
