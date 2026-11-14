@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  ExternalLink,
   Instagram,
   Mail,
   MapPin,
@@ -345,6 +346,13 @@ export function BarbershopPublicPage() {
       ? `${profile.latitude},${profile.longitude}`
       : encodeURIComponent(addressLine || profile.businessName);
   const routeUrl = `https://www.google.com/maps/dir/?api=1&destination=${mapsDestination}`;
+  const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${mapsDestination}`;
+  const embeddedMapUrl =
+    profile.latitude !== null && profile.longitude !== null
+      ? `https://www.openstreetmap.org/export/embed.html?bbox=${profile.longitude - 0.006},${profile.latitude - 0.006},${profile.longitude + 0.006},${profile.latitude + 0.006}&layer=mapnik&marker=${profile.latitude},${profile.longitude}`
+      : addressLine
+        ? `https://maps.google.com/maps?q=${encodeURIComponent(addressLine)}&t=&z=16&ie=UTF8&iwloc=&output=embed`
+        : '';
 
   const themeVars = {
     '--shop-primary': profile.primaryColor || '#d97706',
@@ -1090,15 +1098,25 @@ export function BarbershopPublicPage() {
               </p>
             )}
             {(addressLine || (profile.latitude !== null && profile.longitude !== null)) && (
-              <a
-                href={routeUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="mt-4 inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-950"
-                style={{ backgroundColor: 'var(--shop-primary)' }}
-              >
-                <Navigation className="h-4 w-4" /> Abrir Rota no Mapa
-              </a>
+              <div className="mt-4 flex flex-wrap gap-2.5">
+                <a
+                  href={routeUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold text-slate-950"
+                  style={{ backgroundColor: 'var(--shop-primary)' }}
+                >
+                  <Navigation className="h-4 w-4" /> Abrir Rota no Mapa
+                </a>
+                <a
+                  href={googleMapsUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-xs font-semibold text-white hover:bg-white/10"
+                >
+                  <ExternalLink className="h-4 w-4" /> Abrir no Google Maps
+                </a>
+              </div>
             )}
 
             <div className="mt-6 space-y-2 border-t border-white/10 pt-5 text-sm">
@@ -1118,12 +1136,13 @@ export function BarbershopPublicPage() {
 
           {profile.showMap && (
             <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-900">
-              {profile.latitude !== null && profile.longitude !== null ? (
+              {embeddedMapUrl ? (
                 <iframe
                   title="Mapa da barbearia"
-                  className="h-full min-h-[300px] w-full"
+                  className="h-full min-h-[300px] w-full border-0"
                   loading="lazy"
-                  src={`https://www.openstreetmap.org/export/embed.html?bbox=${profile.longitude - 0.006},${profile.latitude - 0.006},${profile.longitude + 0.006},${profile.latitude + 0.006}&layer=mapnik&marker=${profile.latitude},${profile.longitude}`}
+                  referrerPolicy="no-referrer-when-downgrade"
+                  src={embeddedMapUrl}
                 />
               ) : (
                 <div className="flex h-full min-h-[260px] flex-col items-center justify-center p-6 text-center text-slate-400">
