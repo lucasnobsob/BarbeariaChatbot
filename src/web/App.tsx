@@ -5,6 +5,11 @@ import { LoginPage } from '@web/pages/LoginPage';
 import { RegisterPage } from '@web/pages/RegisterPage';
 import { OnboardingWizard } from '@web/pages/OnboardingWizard';
 import { BarbershopPublicPage } from '@web/pages/BarbershopPublicPage';
+import {
+  DataDeletionPage,
+  PrivacyPolicyPage,
+  TermsOfServicePage
+} from '@web/pages/LegalPages';
 import { AdminLayout } from '@web/components/AdminLayout';
 import { AdminDashboard } from '@web/pages/admin/AdminDashboard';
 import { AdminWebsitePage } from '@web/pages/admin/AdminWebsitePage';
@@ -59,6 +64,9 @@ export function App() {
       <Routes>
         {/* Área pública */}
         <Route path="/" element={<LandingPage />} />
+        <Route path="/privacidade" element={<PrivacyPolicyPage />} />
+        <Route path="/termos" element={<TermsOfServicePage />} />
+        <Route path="/exclusao-de-dados" element={<DataDeletionPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />
         <Route path="/b/:slug" element={<BarbershopPublicPage />} />
