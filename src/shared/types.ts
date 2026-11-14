@@ -4,6 +4,57 @@ export type AppointmentStatus = 'confirmed' | 'cancelled' | 'completed' | 'no_sh
 export type AppointmentSource = 'web' | 'admin' | 'telegram' | 'whatsapp';
 export type ChatbotProviderType = 'telegram' | 'whatsapp';
 export type TemplateKey = 'classic-luxury' | 'modern-minimal' | 'urban-studio';
+export type SubscriptionStatus =
+  | 'trialing'
+  | 'active'
+  | 'past_due'
+  | 'suspended'
+  | 'canceled'
+  | 'exempt';
+export type BillingProviderType = 'manual_pix' | 'mercadopago';
+export type BillingInvoiceStatus =
+  | 'pending'
+  | 'awaiting_confirmation'
+  | 'paid'
+  | 'failed'
+  | 'canceled';
+
+export interface SubscriptionSummary {
+  id: string;
+  tenantId: string;
+  status: SubscriptionStatus;
+  provider: BillingProviderType;
+  priceInCents: number;
+  trialStartsAt: string;
+  trialEndsAt: string;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  gracePeriodEndsAt: string | null;
+  daysRemaining: number | null;
+  graceDaysRemaining: number | null;
+  isBlocked: boolean;
+  canOperate: boolean;
+}
+
+export interface BillingInvoiceItem {
+  id: string;
+  tenantId: string;
+  subscriptionId: string;
+  provider: BillingProviderType;
+  providerInvoiceId: string | null;
+  amountInCents: number;
+  paymentMethod: 'pix' | 'credit_card' | 'manual';
+  status: BillingInvoiceStatus;
+  dueDate: string;
+  paidAt: string | null;
+  paymentNotifiedAt: string | null;
+  payerNote: string;
+  pixCopyPaste: string;
+  pixQrCodeBase64: string;
+  invoiceUrl: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface AuthUser {
   id: string;
@@ -14,6 +65,7 @@ export interface AuthUser {
   tenantSlug: string | null;
   tenantStatus: TenantStatus | null;
   role: UserRole | null;
+  subscription?: SubscriptionSummary | null;
 }
 
 export interface TenantRecord {

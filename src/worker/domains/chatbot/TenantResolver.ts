@@ -1,6 +1,7 @@
 import { decryptSecret, resolveEncryptionKey, sha256Hex } from '@worker/lib/crypto';
 import type { WorkerBindings } from '@worker/types';
 import type { ChatbotProviderType } from '@shared/types';
+import { isTenantSubscriptionOperational } from '@worker/domains/billing/service';
 
 export interface ResolvedChatbotTenant {
   tenantId: string;
@@ -94,6 +95,10 @@ export class TenantResolver {
       return null;
     }
 
+    if (!(await isTenantSubscriptionOperational(env.DB, row.TenantId))) {
+      return null;
+    }
+
     const secrets = await this.decryptConfig(env, row.ConfigurationJson);
     return {
       tenantId: row.TenantId,
@@ -131,6 +136,9 @@ export class TenantResolver {
       }>();
 
     if (!row) return null;
+    if (!(await isTenantSubscriptionOperational(env.DB, row.TenantId))) {
+      return null;
+    }
     const secrets = await this.decryptConfig(env, row.ConfigurationJson);
     return {
       tenantId: row.TenantId,

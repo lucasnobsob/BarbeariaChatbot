@@ -1,8 +1,10 @@
 import { useState } from 'react';
 import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
+  AlertTriangle,
   Bot,
   Calendar,
+  CreditCard,
   ExternalLink,
   Image,
   LayoutDashboard,
@@ -27,6 +29,7 @@ const NAV_ITEMS = [
   { to: '/admin/customers', label: 'Clientes', icon: Users },
   { to: '/admin/gallery', label: 'Galeria', icon: Image },
   { to: '/admin/chatbot', label: 'Chatbot', icon: Bot },
+  { to: '/admin/billing', label: 'Assinatura & Pix', icon: CreditCard },
   { to: '/admin/settings', label: 'Configurações', icon: Settings }
 ];
 
@@ -145,6 +148,40 @@ export function AdminLayout() {
         </header>
 
         <main className="flex-1 p-4 md:p-8">
+          {user?.subscription &&
+            (user.subscription.isBlocked ||
+              user.subscription.status === 'past_due' ||
+              (user.subscription.status === 'trialing' &&
+                (user.subscription.daysRemaining ?? 30) <= 7)) && (
+              <div
+                className={`mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-sm ${
+                  user.subscription.isBlocked
+                    ? 'border-red-500/40 bg-red-950/60 text-red-100'
+                    : user.subscription.status === 'past_due'
+                      ? 'border-amber-500/40 bg-amber-950/60 text-amber-100'
+                      : 'border-sky-500/30 bg-sky-950/50 text-sky-100'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <AlertTriangle className="h-4 w-4 shrink-0" />
+                  <span>
+                    {user.subscription.isBlocked
+                      ? 'Assinatura suspensa por falta de pagamento. Seu site público e chatbot estão pausados até a regularização.'
+                      : user.subscription.status === 'past_due'
+                        ? `Seu prazo venceu! Você está no período de carência (${user.subscription.graceDaysRemaining ?? 0} dia(s) restante(s) antes do bloqueio automático).`
+                        : `Faltam ${user.subscription.daysRemaining ?? 0} dia(s) para terminar seu mês grátis.`}
+                  </span>
+                </div>
+                <Link
+                  to="/admin/billing"
+                  className="rounded-xl bg-amber-500 px-3.5 py-1.5 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                >
+                  {user.subscription.isBlocked || user.subscription.status === 'past_due'
+                    ? 'Pagar Pix agora (R$ 50,00)'
+                    : 'Ver Assinatura'}
+                </Link>
+              </div>
+            )}
           <Outlet />
         </main>
       </div>

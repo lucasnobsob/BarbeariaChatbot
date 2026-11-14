@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '@worker/types';
-import { requireTenantAccess } from '@worker/middleware/auth';
+import { requireActiveSubscription, requireTenantAccess } from '@worker/middleware/auth';
 import { chatbotConfigSchema } from '@shared/schemas';
 import {
   encryptSecret,
@@ -20,6 +20,7 @@ export const chatbotAdminRoutes = new Hono<AppEnv>();
 export const chatbotWebhookRoutes = new Hono<AppEnv>();
 
 chatbotAdminRoutes.use('*', requireTenantAccess(['owner', 'admin', 'manager']));
+chatbotAdminRoutes.use('*', requireActiveSubscription);
 
 chatbotAdminRoutes.get('/', async (c) => {
   const tenantId = c.get('tenantId')!;

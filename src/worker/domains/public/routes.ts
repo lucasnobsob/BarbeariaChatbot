@@ -4,6 +4,7 @@ import type { PublicBarbershopPayload, TenantStatus } from '@shared/types';
 import { publicBookingSchema } from '@shared/schemas';
 import { verifyTurnstileToken } from '@worker/lib/turnstile';
 import { rateLimitMiddleware } from '@worker/middleware/auth';
+import { isTenantSubscriptionOperational } from '@worker/domains/billing/service';
 import {
   createValidatedAppointment,
   getAvailableSlots,
@@ -24,6 +25,9 @@ async function resolvePublicTenant(
     .first<{ Id: string; Name: string; Slug: string; Status: TenantStatus }>();
 
   if (!tenant) return null;
+  if (!(await isTenantSubscriptionOperational(db, tenant.Id))) {
+    return null;
+  }
   if (tenant.Status === 'active') return tenant;
   if (allowPreviewForTenantId && tenant.Id === allowPreviewForTenantId && tenant.Status !== 'blocked') {
     return tenant;
@@ -36,7 +40,9 @@ publicRoutes.get('/showcase', async (c) => {
     `SELECT t.Slug, bp.BusinessName, bp.Tagline, bp.City, bp.State, bp.LogoUrl, bp.CoverImageUrl, bp.PrimaryColor
      FROM Tenants t
      INNER JOIN BusinessProfiles bp ON bp.TenantId = t.Id
+     LEFT JOIN Subscriptions s ON s.TenantId = t.Id
      WHERE t.Status = 'active'
+       AND (s.Id IS NULL OR s.Status != 'suspended')
      ORDER BY t.CreatedAt DESC
      LIMIT 6`
   ).all();

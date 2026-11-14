@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AppEnv } from '@worker/types';
-import { requireTenantAccess } from '@worker/middleware/auth';
+import { requireActiveSubscription, requireTenantAccess } from '@worker/middleware/auth';
 import {
   adminAppointmentSchema,
   blockedSlotSchema,
@@ -27,6 +27,7 @@ import {
 export const adminRoutes = new Hono<AppEnv>();
 
 adminRoutes.use('*', requireTenantAccess());
+adminRoutes.use('*', requireActiveSubscription);
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 adminRoutes.get('/dashboard', async (c) => {

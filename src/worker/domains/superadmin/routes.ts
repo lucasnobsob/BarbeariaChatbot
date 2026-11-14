@@ -3,13 +3,26 @@ import { z } from 'zod';
 import type { AppEnv } from '@worker/types';
 import { requireSuperAdmin } from '@worker/middleware/auth';
 import { logSystemEvent } from '@worker/lib/logger';
+import {
+  activatePaidBillingPeriod,
+  ensureTrialSubscriptionForTenant,
+  evaluateAndSyncSubscription
+} from '@worker/domains/billing/service';
 
 export const superAdminRoutes = new Hono<AppEnv>();
 
 superAdminRoutes.use('*', requireSuperAdmin);
 
 superAdminRoutes.get('/overview', async (c) => {
-  const [tenantsRow, activeTenantsRow, usersRow, apptsRow, errorsRow] = await Promise.all([
+  const [
+    tenantsRow,
+    activeTenantsRow,
+    usersRow,
+    apptsRow,
+    errorsRow,
+    subRows,
+    pendingConfirmRow
+  ] = await Promise.all([
     c.env.DB.prepare(`SELECT COUNT(*) AS Total FROM Tenants`).first<{ Total: number }>(),
     c.env.DB.prepare(`SELECT COUNT(*) AS Total FROM Tenants WHERE Status = 'active'`).first<{
       Total: number;
@@ -18,8 +31,22 @@ superAdminRoutes.get('/overview', async (c) => {
     c.env.DB.prepare(`SELECT COUNT(*) AS Total FROM Appointments`).first<{ Total: number }>(),
     c.env.DB.prepare(`SELECT COUNT(*) AS Total FROM SystemLogs WHERE Level = 'error'`).first<{
       Total: number;
-    }>()
+    }>(),
+    c.env.DB.prepare(
+      `SELECT Status, COUNT(*) AS Total, SUM(CASE WHEN Status = 'active' THEN PriceInCents ELSE 0 END) AS MrrCents
+       FROM Subscriptions GROUP BY Status`
+    ).all<{ Status: string; Total: number; MrrCents: number }>(),
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS Total FROM BillingInvoices WHERE Status = 'awaiting_confirmation'`
+    ).first<{ Total: number }>()
   ]);
+
+  const bySubStatus: Record<string, number> = {};
+  let mrrCents = 0;
+  for (const r of subRows.results) {
+    bySubStatus[r.Status] = r.Total;
+    mrrCents += r.MrrCents || 0;
+  }
 
   return c.json({
     stats: {
@@ -27,7 +54,16 @@ superAdminRoutes.get('/overview', async (c) => {
       activeTenants: activeTenantsRow?.Total ?? 0,
       totalUsers: usersRow?.Total ?? 0,
       totalAppointments: apptsRow?.Total ?? 0,
-      totalErrors: errorsRow?.Total ?? 0
+      totalErrors: errorsRow?.Total ?? 0,
+      billing: {
+        trialing: bySubStatus.trialing ?? 0,
+        active: bySubStatus.active ?? 0,
+        pastDue: bySubStatus.past_due ?? 0,
+        suspended: bySubStatus.suspended ?? 0,
+        exempt: bySubStatus.exempt ?? 0,
+        awaitingConfirmation: pendingConfirmRow?.Total ?? 0,
+        mrrCents
+      }
     }
   });
 });
@@ -36,10 +72,12 @@ superAdminRoutes.get('/tenants', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT t.Id, t.Name, t.Slug, t.Status, t.CreatedAt, t.UpdatedAt,
             bp.BusinessName, bp.City, bp.State, bp.Phone, bp.Email,
+            s.Status AS SubscriptionStatus, s.TrialEndsAt, s.CurrentPeriodEnd, s.GracePeriodEndsAt, s.PriceInCents,
             (SELECT COUNT(*) FROM TenantUsers tu WHERE tu.TenantId = t.Id) AS UserCount,
             (SELECT COUNT(*) FROM Appointments a WHERE a.TenantId = t.Id) AS AppointmentCount
      FROM Tenants t
      LEFT JOIN BusinessProfiles bp ON bp.TenantId = t.Id
+     LEFT JOIN Subscriptions s ON s.TenantId = t.Id
      ORDER BY t.CreatedAt DESC`
   ).all();
 
@@ -140,7 +178,14 @@ superAdminRoutes.put('/settings', async (c) => {
     'max_gallery_images_per_tenant',
     'max_upload_size_bytes',
     'allow_new_registrations',
-    'maintenance_mode'
+    'maintenance_mode',
+    'billing_payment_provider',
+    'billing_trial_days',
+    'billing_grace_days',
+    'billing_monthly_price_cents',
+    'billing_pix_key',
+    'billing_pix_receiver_name',
+    'billing_pix_receiver_city'
   ]);
 
   const stmts: D1PreparedStatement[] = [];
@@ -177,4 +222,158 @@ superAdminRoutes.get('/logs', async (c) => {
 
   const { results } = await c.env.DB.prepare(sql).bind(...binds).all();
   return c.json({ logs: results });
+});
+
+// ─── Gestão de Assinaturas e Pagamentos Pix (Superadmin) ─────────────────────
+superAdminRoutes.get('/billing/invoices', async (c) => {
+  const status = c.req.query('status') || '';
+  let sql = `
+    SELECT i.Id, i.TenantId, i.SubscriptionId, i.Provider, i.ProviderInvoiceId,
+           i.AmountInCents, i.PaymentMethod, i.Status, i.DueDate, i.PaidAt,
+           i.PaymentNotifiedAt, i.PayerNote, i.CreatedAt,
+           t.Name AS TenantName, t.Slug AS TenantSlug,
+           bp.BusinessName,
+           s.Status AS SubscriptionStatus
+    FROM BillingInvoices i
+    INNER JOIN Tenants t ON t.Id = i.TenantId
+    LEFT JOIN BusinessProfiles bp ON bp.TenantId = i.TenantId
+    LEFT JOIN Subscriptions s ON s.TenantId = i.TenantId
+  `;
+  const binds: unknown[] = [];
+  if (status) {
+    sql += ` WHERE i.Status = ?`;
+    binds.push(status);
+  }
+  sql += `
+    ORDER BY
+      CASE i.Status
+        WHEN 'awaiting_confirmation' THEN 0
+        WHEN 'pending' THEN 1
+        ELSE 2
+      END,
+      i.CreatedAt DESC
+    LIMIT 100
+  `;
+
+  const { results } = await c.env.DB.prepare(sql).bind(...binds).all();
+  return c.json({ invoices: results });
+});
+
+superAdminRoutes.post('/billing/invoices/:id/confirm', async (c) => {
+  const invoiceId = c.req.param('id');
+  const invoice = await c.env.DB.prepare(
+    `SELECT Id, TenantId, Status FROM BillingInvoices WHERE Id = ?`
+  )
+    .bind(invoiceId)
+    .first<{ Id: string; TenantId: string; Status: string }>();
+
+  if (!invoice) {
+    return c.json({ error: 'Fatura não encontrada' }, 404);
+  }
+
+  const subscription = await activatePaidBillingPeriod({
+    db: c.env.DB,
+    tenantId: invoice.TenantId,
+    invoiceId: invoice.Id,
+    actorLabel: `superadmin:${c.get('user')!.id}`
+  });
+
+  return c.json({ ok: true, subscription });
+});
+
+superAdminRoutes.post('/billing/invoices/:id/reject', async (c) => {
+  const invoiceId = c.req.param('id');
+  const res = await c.env.DB.prepare(
+    `UPDATE BillingInvoices
+     SET Status = 'pending',
+         PaymentNotifiedAt = NULL,
+         UpdatedAt = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE Id = ? AND Status = 'awaiting_confirmation'`
+  )
+    .bind(invoiceId)
+    .run();
+
+  if ((res.meta.changes ?? 0) === 0) {
+    return c.json({ error: 'Fatura pendente de confirmação não encontrada' }, 404);
+  }
+
+  return c.json({ ok: true });
+});
+
+superAdminRoutes.post('/billing/tenants/:tenantId/exempt', async (c) => {
+  const tenantId = c.req.param('tenantId');
+  const body = (await c.req.json().catch(() => null)) as { exempt?: boolean } | null;
+  const shouldExempt = body?.exempt !== false;
+
+  await ensureTrialSubscriptionForTenant(c.env.DB, tenantId);
+
+  if (shouldExempt) {
+    await c.env.DB.prepare(
+      `UPDATE Subscriptions
+       SET Status = 'exempt', GracePeriodEndsAt = NULL, UpdatedAt = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE TenantId = ?`
+    )
+      .bind(tenantId)
+      .run();
+  } else {
+    await c.env.DB.prepare(
+      `UPDATE Subscriptions
+       SET Status = 'trialing', UpdatedAt = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE TenantId = ?`
+    )
+      .bind(tenantId)
+      .run();
+  }
+
+  const subscription = await evaluateAndSyncSubscription(c.env.DB, tenantId);
+  await logSystemEvent(c.env.DB, {
+    tenantId,
+    level: 'info',
+    source: 'superadmin.billing',
+    message: shouldExempt
+      ? 'Estabelecimento marcado como isento de cobrança (cortesia)'
+      : 'Isenção de cobrança removida pelo superadmin',
+    meta: { actorUserId: c.get('user')!.id }
+  });
+
+  return c.json({ ok: true, subscription });
+});
+
+superAdminRoutes.post('/billing/tenants/:tenantId/extend-trial', async (c) => {
+  const tenantId = c.req.param('tenantId');
+  const body = (await c.req.json().catch(() => null)) as { days?: number } | null;
+  const days = Math.max(1, Math.min(365, Number(body?.days || 30)));
+
+  const sub = await ensureTrialSubscriptionForTenant(c.env.DB, tenantId);
+  const currentEndMs = Math.max(Date.now(), Date.parse(sub.trialEndsAt) || Date.now());
+  const nextTrialEndsAt = new Date(currentEndMs + days * 86_400_000).toISOString();
+
+  await c.env.DB.prepare(
+    `UPDATE Subscriptions
+     SET Status = 'trialing',
+         TrialEndsAt = ?,
+         GracePeriodEndsAt = NULL,
+         UpdatedAt = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE TenantId = ?`
+  )
+    .bind(nextTrialEndsAt, tenantId)
+    .run();
+
+  const subscription = await evaluateAndSyncSubscription(c.env.DB, tenantId);
+  return c.json({ ok: true, subscription });
+});
+
+superAdminRoutes.post('/billing/tenants/:tenantId/manual-activate', async (c) => {
+  const tenantId = c.req.param('tenantId');
+  const body = (await c.req.json().catch(() => null)) as { days?: number } | null;
+  const days = Math.max(1, Math.min(365, Number(body?.days || 30)));
+
+  const subscription = await activatePaidBillingPeriod({
+    db: c.env.DB,
+    tenantId,
+    actorLabel: `superadmin_manual:${c.get('user')!.id}`,
+    daysToGrant: days
+  });
+
+  return c.json({ ok: true, subscription });
 });

@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '@worker/types';
 import { generateId } from '@worker/lib/crypto';
-import { requireTenantAccess } from '@worker/middleware/auth';
+import { requireActiveSubscription, requireTenantAccess } from '@worker/middleware/auth';
 
 export const mediaAdminRoutes = new Hono<AppEnv>();
 export const mediaServeRoutes = new Hono<AppEnv>();
+
+mediaAdminRoutes.use('*', requireTenantAccess(['owner', 'admin', 'manager']), requireActiveSubscription);
 
 const ALLOWED_FOLDERS = new Set(['logos', 'covers', 'services', 'professionals', 'gallery']);
 

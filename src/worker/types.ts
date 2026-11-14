@@ -9,6 +9,12 @@ export interface WorkerBindings {
   TURNSTILE_SITE_KEY?: string;
   ENVIRONMENT?: string;
   APP_NAME?: string;
+  PAYMENT_PROVIDER?: string;
+  MERCADOPAGO_ACCESS_TOKEN?: string;
+  MERCADOPAGO_WEBHOOK_SECRET?: string;
+  PIX_RECEIVER_KEY?: string;
+  PIX_RECEIVER_NAME?: string;
+  PIX_RECEIVER_CITY?: string;
 }
 
 export interface WorkerVariables {

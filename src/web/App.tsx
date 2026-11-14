@@ -19,8 +19,10 @@ import { AdminAppointmentsPage } from '@web/pages/admin/AdminAppointmentsPage';
 import { AdminCustomersPage } from '@web/pages/admin/AdminCustomersPage';
 import { AdminGalleryPage } from '@web/pages/admin/AdminGalleryPage';
 import { AdminChatbotPage } from '@web/pages/admin/AdminChatbotPage';
+import { AdminBillingPage } from '@web/pages/admin/AdminBillingPage';
 import { AdminSettingsPage } from '@web/pages/admin/AdminSettingsPage';
 import {
+  SuperAdminBillingPage,
   SuperAdminLayout,
   SuperAdminLogsPage,
   SuperAdminOverviewPage,
@@ -92,6 +94,7 @@ export function App() {
             <Route path="customers" element={<AdminCustomersPage />} />
             <Route path="gallery" element={<AdminGalleryPage />} />
             <Route path="chatbot" element={<AdminChatbotPage />} />
+            <Route path="billing" element={<AdminBillingPage />} />
             <Route path="settings" element={<AdminSettingsPage />} />
           </Route>
         </Route>
@@ -101,6 +104,7 @@ export function App() {
           <Route path="/superadmin" element={<SuperAdminLayout />}>
             <Route index element={<SuperAdminOverviewPage />} />
             <Route path="tenants" element={<SuperAdminTenantsPage />} />
+            <Route path="billing" element={<SuperAdminBillingPage />} />
             <Route path="users" element={<SuperAdminUsersPage />} />
             <Route path="settings" element={<SuperAdminSettingsPage />} />
             <Route path="logs" element={<SuperAdminLogsPage />} />

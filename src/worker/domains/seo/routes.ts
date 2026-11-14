@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '@worker/types';
+import { isTenantSubscriptionOperational } from '@worker/domains/billing/service';
 
 export const seoRoutes = new Hono<AppEnv>();
 
@@ -29,7 +30,12 @@ seoRoutes.get('/robots.txt', (c) => {
 seoRoutes.get('/sitemap.xml', async (c) => {
   const origin = new URL(c.req.url).origin;
   const { results } = await c.env.DB.prepare(
-    `SELECT Slug, UpdatedAt FROM Tenants WHERE Status = 'active' ORDER BY UpdatedAt DESC LIMIT 1000`
+    `SELECT t.Slug, t.UpdatedAt
+     FROM Tenants t
+     LEFT JOIN Subscriptions s ON s.TenantId = t.Id
+     WHERE t.Status = 'active'
+       AND (s.Id IS NULL OR s.Status != 'suspended')
+     ORDER BY t.UpdatedAt DESC LIMIT 1000`
   ).all<{ Slug: string; UpdatedAt: string }>();
 
   const urls: string[] = [
@@ -52,13 +58,14 @@ seoRoutes.get('/sitemap.xml', async (c) => {
 seoRoutes.get('/b/:slug/manifest.webmanifest', async (c) => {
   const slug = (c.req.param('slug') || '').toLowerCase();
   const row = await c.env.DB.prepare(
-    `SELECT t.Slug, bp.BusinessName, bp.Tagline, bp.Description, bp.PrimaryColor, bp.SecondaryColor
+    `SELECT t.Id, t.Slug, bp.BusinessName, bp.Tagline, bp.Description, bp.PrimaryColor, bp.SecondaryColor
      FROM Tenants t
      INNER JOIN BusinessProfiles bp ON bp.TenantId = t.Id
      WHERE t.Slug = ? AND t.Status = 'active'`
   )
     .bind(slug)
     .first<{
+      Id: string;
       Slug: string;
       BusinessName: string;
       Tagline: string | null;
@@ -67,7 +74,7 @@ seoRoutes.get('/b/:slug/manifest.webmanifest', async (c) => {
       SecondaryColor: string | null;
     }>();
 
-  if (!row) {
+  if (!row || !(await isTenantSubscriptionOperational(c.env.DB, row.Id))) {
     return c.json({ error: 'Barbearia não encontrada' }, 404);
   }
 

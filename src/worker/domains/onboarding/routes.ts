@@ -15,6 +15,7 @@ import {
   requireAuth,
   requireTenantAccess
 } from '@worker/middleware/auth';
+import { ensureTrialSubscriptionForTenant } from '@worker/domains/billing/service';
 
 export const onboardingRoutes = new Hono<AppEnv>();
 
@@ -405,6 +406,8 @@ onboardingRoutes.post('/complete', requireAuth, async (c) => {
 
   await c.env.DB.batch(statements);
 
+  const subscription = await ensureTrialSubscriptionForTenant(c.env.DB, tenantId);
+
   const sessionToken = getCookie(c, SESSION_COOKIE_NAME);
   if (sessionToken) {
     const tokenHash = await sha256Hex(sessionToken);
@@ -420,6 +423,7 @@ onboardingRoutes.post('/complete', requireAuth, async (c) => {
       slug,
       status
     },
+    subscription,
     publicUrl: `/b/${slug}`
   });
 });
@@ -445,6 +449,8 @@ onboardingRoutes.post(
       .bind(tenantId)
       .run();
 
-    return c.json({ ok: true, slug: tenant.Slug, publicUrl: `/b/${tenant.Slug}` });
+    const subscription = await ensureTrialSubscriptionForTenant(c.env.DB, tenantId);
+
+    return c.json({ ok: true, slug: tenant.Slug, publicUrl: `/b/${tenant.Slug}`, subscription });
   }
 );

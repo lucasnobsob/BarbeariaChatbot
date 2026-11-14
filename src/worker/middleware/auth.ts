@@ -4,6 +4,7 @@ import type { AppEnv } from '@worker/types';
 import { sha256Hex } from '@worker/lib/crypto';
 import type { AuthUser, TenantStatus, UserRole } from '@shared/types';
 import { checkRateLimit } from '@worker/lib/rateLimit';
+import { isTenantSubscriptionOperational } from '@worker/domains/billing/service';
 
 export const SESSION_COOKIE_NAME = 'barbersaas_session';
 
@@ -105,6 +106,30 @@ export function requireTenantAccess(allowedRoles?: UserRole[]) {
     }
     await next();
   };
+}
+
+export async function requireActiveSubscription(
+  c: Context<AppEnv>,
+  next: Next
+): Promise<Response | void> {
+  const tenantId = c.get('tenantId');
+  if (!tenantId) {
+    await next();
+    return;
+  }
+
+  const operational = await isTenantSubscriptionOperational(c.env.DB, tenantId);
+  if (!operational) {
+    return c.json(
+      {
+        error: 'Assinatura suspensa por falta de pagamento. Regularize via Pix em Assinatura para desbloquear.',
+        code: 'SUBSCRIPTION_REQUIRED'
+      },
+      402
+    );
+  }
+
+  await next();
 }
 
 export async function requireSuperAdmin(c: Context<AppEnv>, next: Next): Promise<Response | void> {

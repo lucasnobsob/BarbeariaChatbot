@@ -16,6 +16,7 @@ import {
   requireAuth
 } from '@worker/middleware/auth';
 import { logSystemEvent } from '@worker/lib/logger';
+import { evaluateAndSyncSubscription } from '@worker/domains/billing/service';
 import type { AuthUser, TenantStatus, UserRole } from '@shared/types';
 
 export const authRoutes = new Hono<AppEnv>();
@@ -31,9 +32,24 @@ function buildCookieOptions(reqUrl: string, expiresAt: Date) {
   };
 }
 
-authRoutes.get('/me', (c) => {
+authRoutes.get('/me', async (c) => {
+  const user = c.get('user');
+  if (!user) {
+    return c.json({
+      user: null,
+      turnstileSiteKey: c.env.TURNSTILE_SITE_KEY || '1x00000000000000000000AA'
+    });
+  }
+
+  const subscription = user.tenantId
+    ? await evaluateAndSyncSubscription(c.env.DB, user.tenantId)
+    : null;
+
   return c.json({
-    user: c.get('user'),
+    user: {
+      ...user,
+      subscription
+    },
     turnstileSiteKey: c.env.TURNSTILE_SITE_KEY || '1x00000000000000000000AA'
   });
 });

@@ -7,6 +7,7 @@ import { publicRoutes } from '@worker/domains/public/routes';
 import { adminRoutes } from '@worker/domains/admin/routes';
 import { mediaAdminRoutes, mediaServeRoutes } from '@worker/domains/media/routes';
 import { chatbotAdminRoutes, chatbotWebhookRoutes } from '@worker/domains/chatbot/routes';
+import { billingAdminRoutes, billingWebhookRoutes } from '@worker/domains/billing/routes';
 import { superAdminRoutes } from '@worker/domains/superadmin/routes';
 import { injectBarbershopSeoMeta, seoRoutes } from '@worker/domains/seo/routes';
 import { logSystemEvent } from '@worker/lib/logger';
@@ -49,7 +50,9 @@ app.route('/api/onboarding', onboardingRoutes);
 app.route('/api/public', publicRoutes);
 app.route('/api/admin/media', mediaAdminRoutes);
 app.route('/api/admin/chatbot', chatbotAdminRoutes);
+app.route('/api/admin/billing', billingAdminRoutes);
 app.route('/api/admin', adminRoutes);
+app.route('/api/webhooks/payments', billingWebhookRoutes);
 app.route('/api/webhooks', chatbotWebhookRoutes);
 app.route('/api/superadmin', superAdminRoutes);
 

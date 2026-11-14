@@ -830,5 +830,157 @@ describe('Plataforma SaaS Multi-Tenant — Testes Automatizados', () => {
       `http://example.com/b/${beta.slug}/manifest.webmanifest`
     );
     expect(betaManifestRes.status).toBe(404);
+
+    // ── 10. Assinatura (30d Trial, Pix Nubank, 5d Carência e Autobloqueio) ─
+    const initialBillingRes = await SELF.fetch('http://example.com/api/admin/billing/status', {
+      headers: { Cookie: alpha.cookie }
+    });
+    expect(initialBillingRes.status).toBe(200);
+    const initialBilling = (await initialBillingRes.json()) as {
+      subscription: { status: string; priceInCents: number; daysRemaining: number; isBlocked: boolean };
+    };
+    expect(initialBilling.subscription.status).toBe('trialing');
+    expect(initialBilling.subscription.priceInCents).toBe(5000);
+    expect(initialBilling.subscription.daysRemaining).toBeGreaterThanOrEqual(29);
+    expect(initialBilling.subscription.isBlocked).toBe(false);
+
+    // Superadmin configura a chave Pix do Nubank
+    const setPixRes = await SELF.fetch('http://example.com/api/superadmin/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: superCookie },
+      body: JSON.stringify({
+        settings: {
+          billing_pix_key: 'lucas@nubank.com.br',
+          billing_pix_receiver_name: 'Lucas Barbearia'
+        }
+      })
+    });
+    expect(setPixRes.status).toBe(200);
+
+    // Dono gera cobrança Pix (R$ 50,00)
+    const checkoutRes = await SELF.fetch('http://example.com/api/admin/billing/checkout', {
+      method: 'POST',
+      headers: { Cookie: alpha.cookie }
+    });
+    expect(checkoutRes.status).toBe(201);
+    const checkoutJson = (await checkoutRes.json()) as {
+      invoice: { id: string; amountInCents: number; status: string; pixCopyPaste: string };
+    };
+    expect(checkoutJson.invoice.amountInCents).toBe(5000);
+    expect(checkoutJson.invoice.status).toBe('pending');
+    expect(checkoutJson.invoice.pixCopyPaste).toContain('br.gov.bcb.pix');
+    expect(checkoutJson.invoice.pixCopyPaste).toContain('lucas@nubank.com.br');
+    expect(checkoutJson.invoice.pixCopyPaste).toContain('540550.00');
+
+    // Dono informa que realizou o pagamento Pix
+    const notifyRes = await SELF.fetch(
+      `http://example.com/api/admin/billing/invoices/${checkoutJson.invoice.id}/notify-payment`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: alpha.cookie },
+        body: JSON.stringify({ payerNote: 'Pago via Nubank por Alpha' })
+      }
+    );
+    expect(notifyRes.status).toBe(200);
+    const notifyJson = (await notifyRes.json()) as {
+      invoice: { status: string; payerNote: string };
+    };
+    expect(notifyJson.invoice.status).toBe('awaiting_confirmation');
+    expect(notifyJson.invoice.payerNote).toBe('Pago via Nubank por Alpha');
+
+    // Simular expiração do trial há 2 dias -> entra em carência (5 dias), ainda operacional
+    const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    await env.DB.prepare(
+      `UPDATE Subscriptions SET Status = 'trialing', TrialEndsAt = ? WHERE TenantId = ?`
+    )
+      .bind(twoDaysAgo, alpha.tenantId)
+      .run();
+
+    const graceRes = await SELF.fetch('http://example.com/api/admin/billing/status', {
+      headers: { Cookie: alpha.cookie }
+    });
+    const graceJson = (await graceRes.json()) as {
+      subscription: { status: string; graceDaysRemaining: number; isBlocked: boolean };
+    };
+    expect(graceJson.subscription.status).toBe('past_due');
+    expect(graceJson.subscription.graceDaysRemaining).toBeGreaterThanOrEqual(2);
+    expect(graceJson.subscription.isBlocked).toBe(false);
+
+    // Simular fim dos 5 dias de carência (7 dias após o vencimento) -> autobloqueio imediato
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    await env.DB.prepare(
+      `UPDATE Subscriptions SET Status = 'trialing', TrialEndsAt = ?, GracePeriodEndsAt = NULL WHERE TenantId = ?`
+    )
+      .bind(sevenDaysAgo, alpha.tenantId)
+      .run();
+
+    const blockedPublicRes = await SELF.fetch(`http://example.com/api/public/${alpha.slug}`);
+    expect(blockedPublicRes.status).toBe(404);
+
+    const blockedAdminRes = await SELF.fetch('http://example.com/api/admin/dashboard', {
+      headers: { Cookie: alpha.cookie }
+    });
+    expect(blockedAdminRes.status).toBe(402);
+
+    // Tela de assinatura continua acessível para o dono pagar mesmo bloqueado
+    const billingWhenBlockedRes = await SELF.fetch('http://example.com/api/admin/billing/status', {
+      headers: { Cookie: alpha.cookie }
+    });
+    expect(billingWhenBlockedRes.status).toBe(200);
+    const billingWhenBlocked = (await billingWhenBlockedRes.json()) as {
+      subscription: { status: string; isBlocked: boolean };
+    };
+    expect(billingWhenBlocked.subscription.status).toBe('suspended');
+    expect(billingWhenBlocked.subscription.isBlocked).toBe(true);
+
+    // Superadmin confirma manualmente o pagamento Pix -> desbloqueio imediato (+30 dias)
+    const confirmPayRes = await SELF.fetch(
+      `http://example.com/api/superadmin/billing/invoices/${checkoutJson.invoice.id}/confirm`,
+      {
+        method: 'POST',
+        headers: { Cookie: superCookie }
+      }
+    );
+    expect(confirmPayRes.status).toBe(200);
+    const confirmPayJson = (await confirmPayRes.json()) as {
+      subscription: { status: string; isBlocked: boolean; daysRemaining: number };
+    };
+    expect(confirmPayJson.subscription.status).toBe('active');
+    expect(confirmPayJson.subscription.isBlocked).toBe(false);
+    expect(confirmPayJson.subscription.daysRemaining).toBeGreaterThanOrEqual(29);
+
+    const unblockedPublicRes = await SELF.fetch(`http://example.com/api/public/${alpha.slug}`);
+    expect(unblockedPublicRes.status).toBe(200);
+    const unblockedAdminRes = await SELF.fetch('http://example.com/api/admin/dashboard', {
+      headers: { Cookie: alpha.cookie }
+    });
+    expect(unblockedAdminRes.status).toBe(200);
+
+    // Superadmin pode tornar barbearia isenta
+    const exemptRes = await SELF.fetch(
+      `http://example.com/api/superadmin/billing/tenants/${alpha.tenantId}/exempt`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: superCookie },
+        body: JSON.stringify({ exempt: true })
+      }
+    );
+    expect(exemptRes.status).toBe(200);
+    const exemptJson = (await exemptRes.json()) as {
+      subscription: { status: string; isBlocked: boolean };
+    };
+    expect(exemptJson.subscription.status).toBe('exempt');
+    expect(exemptJson.subscription.isBlocked).toBe(false);
+
+    // Webhook futuro do Mercado Pago rejeita assinatura inválida com 401
+    const forgedMpWebhook = await SELF.fetch(
+      'http://example.com/api/webhooks/payments/mercadopago',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'payment', data: { id: '999999' } })
+      }
+    );
+    expect(forgedMpWebhook.status).toBe(401);
   });
 });
