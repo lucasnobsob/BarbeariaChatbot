@@ -23,6 +23,7 @@ import type { PublicBarbershopPayload } from '@shared/types';
 import { apiFetch, formatBRL, formatDateTimeBR } from '@web/lib/api';
 import { useAuth } from '@web/lib/authContext';
 import { TurnstileWidget } from '@web/components/TurnstileWidget';
+import { InstallAppPrompt } from '@web/components/InstallAppPrompt';
 
 const DAY_NAMES = [
   'Domingo',
@@ -1207,6 +1208,12 @@ export function BarbershopPublicPage() {
           </div>
         </div>
       </footer>
+
+      <InstallAppPrompt
+        appName={profile.businessName}
+        storageKey={tenant.slug}
+        accentColor={profile.primaryColor || '#f59e0b'}
+      />
     </div>
   );
 }

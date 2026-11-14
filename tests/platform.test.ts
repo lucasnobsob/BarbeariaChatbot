@@ -809,5 +809,26 @@ describe('Plataforma SaaS Multi-Tenant — Testes Automatizados', () => {
       appointments: Array<{ CustomerName: string }>;
     };
     expect(lookupByPhoneJson.appointments.length).toBeGreaterThanOrEqual(1);
+
+    const alphaManifestRes = await SELF.fetch(
+      `http://example.com/b/${alpha.slug}/manifest.webmanifest`
+    );
+    expect(alphaManifestRes.status).toBe(200);
+    expect(alphaManifestRes.headers.get('content-type')).toContain('application/manifest+json');
+    const alphaManifest = (await alphaManifestRes.json()) as {
+      name: string;
+      start_url: string;
+      scope: string;
+      icons: Array<{ src: string }>;
+    };
+    expect(alphaManifest.name).toBeTruthy();
+    expect(alphaManifest.start_url).toBe(`/b/${alpha.slug}`);
+    expect(alphaManifest.scope).toBe(`/b/${alpha.slug}`);
+    expect(alphaManifest.icons.length).toBeGreaterThanOrEqual(2);
+
+    const betaManifestRes = await SELF.fetch(
+      `http://example.com/b/${beta.slug}/manifest.webmanifest`
+    );
+    expect(betaManifestRes.status).toBe(404);
   });
 });

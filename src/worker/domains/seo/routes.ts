@@ -49,6 +49,56 @@ seoRoutes.get('/sitemap.xml', async (c) => {
   return c.text(xml, 200, { 'Content-Type': 'application/xml; charset=utf-8' });
 });
 
+seoRoutes.get('/b/:slug/manifest.webmanifest', async (c) => {
+  const slug = (c.req.param('slug') || '').toLowerCase();
+  const row = await c.env.DB.prepare(
+    `SELECT t.Slug, bp.BusinessName, bp.Tagline, bp.Description, bp.PrimaryColor, bp.SecondaryColor
+     FROM Tenants t
+     INNER JOIN BusinessProfiles bp ON bp.TenantId = t.Id
+     WHERE t.Slug = ? AND t.Status = 'active'`
+  )
+    .bind(slug)
+    .first<{
+      Slug: string;
+      BusinessName: string;
+      Tagline: string | null;
+      Description: string | null;
+      PrimaryColor: string | null;
+      SecondaryColor: string | null;
+    }>();
+
+  if (!row) {
+    return c.json({ error: 'Barbearia não encontrada' }, 404);
+  }
+
+  const businessName = row.BusinessName || 'Barbearia';
+  const manifest = {
+    name: businessName,
+    short_name: businessName.slice(0, 14),
+    description:
+      row.Tagline || row.Description || `Agendamento online em ${businessName}.`,
+    start_url: `/b/${row.Slug}`,
+    scope: `/b/${row.Slug}`,
+    display: 'standalone',
+    background_color: row.SecondaryColor || '#020617',
+    theme_color: row.PrimaryColor || '#f59e0b',
+    lang: 'pt-BR',
+    icons: [
+      { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+    ]
+  };
+
+  return new Response(JSON.stringify(manifest, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/manifest+json; charset=utf-8',
+      'Cache-Control': 'public, max-age=300'
+    }
+  });
+});
+
 export async function injectBarbershopSeoMeta(
   c: { env: AppEnv['Bindings']; req: { url: string } },
   slug: string,
@@ -57,7 +107,7 @@ export async function injectBarbershopSeoMeta(
   const row = await c.env.DB.prepare(
     `SELECT t.Slug, bp.BusinessName, bp.Tagline, bp.Description, bp.CoverImageUrl, bp.LogoUrl,
             bp.Phone, bp.Street, bp.Number, bp.Neighborhood, bp.City, bp.State, bp.PostalCode,
-            bp.Latitude, bp.Longitude
+            bp.Latitude, bp.Longitude, bp.PrimaryColor
      FROM Tenants t
      INNER JOIN BusinessProfiles bp ON bp.TenantId = t.Id
      WHERE t.Slug = ? AND t.Status = 'active'`
@@ -106,8 +156,12 @@ export async function injectBarbershopSeoMeta(
   };
 
   const titleTag = `<title>${escapeHtml(name)} — Agendamento Online</title>`;
+  const themeColor = String(row.PrimaryColor || '#f59e0b');
   const extraMeta = [
     `<meta name="description" content="${escapeHtml(desc)}" />`,
+    `<meta name="theme-color" content="${escapeHtml(themeColor)}" />`,
+    `<meta name="apple-mobile-web-app-title" content="${escapeHtml(name)}" />`,
+    `<link rel="manifest" href="/b/${escapeHtml(String(row.Slug))}/manifest.webmanifest" />`,
     `<link rel="canonical" href="${escapeHtml(canonicalUrl)}" />`,
     `<meta property="og:type" content="business.business" />`,
     `<meta property="og:title" content="${escapeHtml(name)}" />`,
@@ -122,6 +176,9 @@ export async function injectBarbershopSeoMeta(
   return baseHtml
     .replace(/<title>.*?<\/title>/is, titleTag)
     .replace(/<meta name="description"[^>]*>/i, '')
+    .replace(/<meta name="theme-color"[^>]*>/i, '')
+    .replace(/<meta name="apple-mobile-web-app-title"[^>]*>/i, '')
+    .replace(/<link rel="manifest"[^>]*>/i, '')
     .replace(/<meta property="og:[^>]*>/gi, '')
     .replace('</head>', `    ${extraMeta}\n  </head>`);
 }

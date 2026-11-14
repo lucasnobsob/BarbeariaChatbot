@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { apiFetch } from '@web/lib/api';
 import { useAuth } from '@web/lib/authContext';
+import { InstallAppPrompt } from '@web/components/InstallAppPrompt';
 
 interface ShowcaseShop {
   Slug: string;
@@ -231,6 +232,8 @@ export function LandingPage() {
       <footer className="border-t border-slate-800 px-4 py-8 text-center text-xs text-slate-500">
         BarberSaaS — Plataforma SaaS Multi-Tenant para Barbearias • Cloudflare Workers, D1 & R2
       </footer>
+
+      <InstallAppPrompt appName="BarberSaaS" storageKey="barbersaas" />
     </div>
   );
 }
