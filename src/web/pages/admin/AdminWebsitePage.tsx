@@ -144,12 +144,21 @@ export function AdminWebsitePage() {
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-slate-400">Slug (/b/...)</label>
+            <label htmlFor="admin-barbershop-slug" className="mb-1 block text-xs text-slate-400">
+              Link personalizado (/b/...)
+            </label>
             <input
+              id="admin-barbershop-slug"
+              name="barbershop-slug"
+              autoComplete="off"
               value={slug}
-              onChange={(e) => setSlug(e.target.value)}
+              onChange={(e) => setSlug(e.target.value.toLowerCase())}
+              placeholder="nome-da-barbearia"
               className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-mono"
             />
+            <p className="mt-1 text-[11px] text-slate-400">
+              URL pública: <span className="text-amber-300">/b/{slug}</span>
+            </p>
           </div>
           <div>
             <label className="mb-1 block text-xs text-slate-400">Template</label>

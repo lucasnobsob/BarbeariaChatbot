@@ -52,6 +52,7 @@ export function OnboardingWizard() {
   // Step 1 & 2 & 3
   const [businessName, setBusinessName] = useState('');
   const [slug, setSlug] = useState('');
+  const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
   const [slugAvailable, setSlugAvailable] = useState<boolean | null>(null);
   const [slugReason, setSlugReason] = useState('');
   const [description, setDescription] = useState('');
@@ -385,10 +386,12 @@ export function OnboardingWizard() {
                 <div>
                   <label className="mb-1 block text-sm text-slate-300">Nome da Barbearia *</label>
                   <input
+                    name="barbershop-name"
+                    autoComplete="organization"
                     value={businessName}
                     onChange={(e) => {
                       setBusinessName(e.target.value);
-                      if (!user?.tenantId) {
+                      if (!user?.tenantId && !slugManuallyEdited) {
                         void checkSlugAvailability(e.target.value);
                       }
                     }}
@@ -397,10 +400,18 @@ export function OnboardingWizard() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm text-slate-300">Endereço do site (/b/...)</label>
+                  <label htmlFor="barbershop-slug" className="mb-1 block text-sm text-slate-300">
+                    Link personalizado (/b/...)
+                  </label>
                   <input
+                    id="barbershop-slug"
+                    name="barbershop-slug"
+                    autoComplete="off"
                     value={slug}
-                    onChange={(e) => void checkSlugAvailability(e.target.value)}
+                    onChange={(e) => {
+                      setSlugManuallyEdited(true);
+                      void checkSlugAvailability(e.target.value);
+                    }}
                     placeholder="barbearia-dom-pedro"
                     className="w-full rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2.5 text-sm font-mono text-white outline-none focus:border-amber-500"
                   />
